@@ -8,9 +8,11 @@ import subprocess
 from datetime import date
 from importlib import resources
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import typer
+import yaml
 
 VAULT_DIRS = (
     "raw",
@@ -51,6 +53,26 @@ def init_vault(path: Path) -> None:
     git(path, "commit", "--quiet", "-m", "Initialize Mnexa vault")
 
     typer.echo(f"Initialized vault at {path}")
+
+
+def read_frontmatter(path: Path) -> dict[str, Any]:
+    """Read YAML frontmatter from a markdown file. Returns {} if absent or invalid."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return {}
+    try:
+        loaded: object = yaml.safe_load(text[4:end])
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return loaded  # type: ignore[return-value]
 
 
 def find_vault(start: Path) -> Path | None:

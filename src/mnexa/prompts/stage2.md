@@ -8,7 +8,14 @@ Your inputs (in the user message):
 - `<analysis>`: the Stage-1 analysis of the source. Trust its structure;
   cross-check against `<source>` where bodies need verbatim detail.
 - `<source>`: the source document being ingested, with filename, content
-  hash, and content.
+  hash, source_path, and content.
+- `<drive_meta>` (optional): present only when the source originated in
+  Google Drive. Contains `file_id`, `modified_time`, `web_view_link`,
+  `drive_path`, `mime_type`. When present, the source page's frontmatter
+  MUST include exactly: `drive_file_id`, `drive_modified`, `drive_url`,
+  `drive_path`, `mime_type` — copying values verbatim from `<drive_meta>`.
+  Set `source_path:` to the value provided in the `<source>` tag (which
+  will be `drive://<file_id>` for Drive sources, `raw/<filename>` for local).
 - `<existing_pages>`: the current full text of every wiki page mentioned
   in `<analysis>` as `update`, plus the current `wiki/index.md` and
   `wiki/log.md`. When updating these, preserve all content the analysis
@@ -20,13 +27,32 @@ and **nothing else** — no preamble, no explanation, no closing remarks.
 The first character of your response must be `=` (the start of a
 `=== FILE: ===` sentinel), or your response must be empty (a no-op).
 
-Required FILE blocks for a normal ingest:
+## Adaptive depth
+
+Match the source page's depth to what the source actually warrants:
+
+- **Rich** (paper, article, design doc, meeting notes, book chapter, blog post):
+  full source page per the schema — Summary, Key claims, Entities mentioned,
+  Concepts mentioned, Notes. Synthesize. Cross-link.
+- **Sparse** (tax form, receipt, signed PDF, invoice, screenshot, scanned
+  bill, certificate, anything where the source is mostly structured fields
+  or a single image): brief source page only. Include filename, what it
+  is in 1–3 sentences, key facts as a short bulleted list, the Drive link
+  (if applicable). **Skip** the Entities/Concepts/Key claims sections.
+  Do not emit entity or concept FILE blocks for sparse sources unless they
+  appear substantively across multiple sources already in the wiki.
+
+Decide depth by reading `<source>`. **Don't pad sparse content with
+invented analysis.** A two-sentence source page for a receipt is correct;
+a three-paragraph synthesis of "what this receipt could mean" is invention.
+
+## Required FILE blocks for a normal ingest
 
 1. The source page at `wiki/sources/<slug>.md` (new or update).
-2. One FILE block per entity in §3 of the analysis with status `new` or
-   `update`. (Skip `mention-only`.)
-3. One FILE block per concept in §4 of the analysis with status `new` or
-   `update`.
+2. **Rich sources only**: one FILE block per entity in §3 of the analysis
+   with status `new` or `update`. (Skip `mention-only`.)
+3. **Rich sources only**: one FILE block per concept in §4 of the analysis
+   with status `new` or `update`.
 4. An updated `wiki/index.md` reflecting any added pages, sorted per the schema.
 5. An updated `wiki/log.md` with one new line appended at the bottom:
    `- <today> INGEST sources/<slug> — <one-line summary>`

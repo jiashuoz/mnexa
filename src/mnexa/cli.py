@@ -31,10 +31,19 @@ def init(
 
 @app.command()
 def ingest(
-    file: Path = typer.Argument(..., exists=True, dir_okay=False, help="File to ingest."),
+    target: str = typer.Argument(
+        ...,
+        help="A local file, local folder, Drive file URL, or Drive folder URL.",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation prompts on folder ingests.",
+    ),
+    limit: int | None = typer.Option(
+        None, "--limit", help="Max files to ingest (folder mode).",
+    ),
 ) -> None:
-    """Ingest a single source file into the wiki."""
-    ingest_mod.run(file)
+    """Ingest a file, folder, or Drive URL into the wiki."""
+    ingest_mod.run(target, yes=yes, limit=limit)
 
 
 @app.command()

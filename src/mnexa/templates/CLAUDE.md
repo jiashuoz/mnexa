@@ -49,8 +49,14 @@ type: source
 title: <original document title>
 slug: <stable slug>
 ingested: <YYYY-MM-DD>
-source_path: raw/<filename>
+source_path: raw/<filename>     # or drive://<file_id> for Drive sources
 hash: <sha256 of source bytes>
+# Drive-only fields (present iff source came from Google Drive):
+drive_file_id: <Drive file ID>
+drive_modified: <RFC 3339 timestamp from Drive>
+drive_url: https://drive.google.com/file/d/<id>/view
+drive_path: <path inside Drive>
+mime_type: <Drive mime type>
 ---
 ```
 
