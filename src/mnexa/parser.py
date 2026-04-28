@@ -37,21 +37,29 @@ _MD_EMPHASIS_RE = re.compile(r"[*_`]+")
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 _URL_RE = re.compile(r"https?://\S+")
+# Apostrophes (straight, curly, modifier-letter, backtick used as quote)
+# disappear from transcripts in possessives and contractions, and the LLM
+# usually drops them when quoting. Strip rather than substitute with space
+# so "Anthropic's" can match a paraphrased "anthropics".
+_APOSTROPHE_RE = re.compile(r"[’ʼ'`]")
 
 
 def _normalize_for_match(s: str) -> str:
-    """Strip markdown formatting, bare URLs, and collapse whitespace.
+    """Strip markdown formatting, bare URLs, lowercase, collapse whitespace.
 
     Lets the LLM drop presentation markup (`**bold**`, `[text](url)`,
-    `[[wiki|alias]]`) and inline URLs when quoting prose without that
-    counting as fabrication. The grounding rule applies to *meaning*,
-    not presentation.
+    `[[wiki|alias]]`), inline URLs, and casing differences when quoting
+    prose without that counting as fabrication. The grounding rule
+    applies to *meaning*, not presentation. Casing in particular shifts
+    naturally between a heading-cased source line ("Interface design...")
+    and a sentence-cased quote ("interface design...").
     """
     s = _WIKILINK_RE.sub(lambda m: m.group(2) or m.group(1), s)
     s = _MD_LINK_RE.sub(r"\1", s)
     s = _URL_RE.sub("", s)
     s = _MD_EMPHASIS_RE.sub("", s)
-    return " ".join(s.split())
+    s = _APOSTROPHE_RE.sub("", s)
+    return " ".join(s.split()).lower()
 
 
 def verify_grounding(blocks: list[FileBlock], source_text: str) -> None:

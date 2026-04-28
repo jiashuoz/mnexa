@@ -86,6 +86,35 @@ def test_load_granola_source_renders_text() -> None:
     assert source.granola_meta.updated_at == "2026-04-15T15:30:00Z"
 
 
+def test_render_note_merges_consecutive_same_speaker_turns() -> None:
+    """Granola splits utterances at silence boundaries; merging them lets the
+    substring verifier match quotes that span turn boundaries."""
+    from mnexa.granola.client import GranolaNote, GranolaUser, render_note_text
+
+    note = GranolaNote(
+        note_id="not_xxxxxxxxxxxxxx",
+        title="Standup",
+        created_at="", updated_at="",
+        owner=GranolaUser(name=None, email=""),
+        web_url="", summary_text="", summary_markdown=None,
+        transcript=[
+            {"speaker": {"source": "microphone"},
+             "text": "trying to improve the quality"},
+            {"speaker": {"source": "microphone"},
+             "text": "of the scheduler agent."},
+            {"speaker": {"source": "speaker"},
+             "text": "Sounds good."},
+        ],
+        attendees=[], folder_names=[], raw={},
+    )
+    text = render_note_text(note)
+    # The two consecutive 'microphone' turns are merged into one line, so
+    # the full spoken phrase is now a literal substring.
+    assert "trying to improve the quality of the scheduler agent." in text
+    # Different speaker still gets its own line.
+    assert "speaker: Sounds good." in text
+
+
 def test_render_note_text_handles_minimal_note() -> None:
     from mnexa.granola.client import GranolaNote, GranolaUser, render_note_text
 

@@ -170,11 +170,27 @@ def render_note_text(note: GranolaNote) -> str:
 
     if note.transcript:
         parts.append("## Transcript\n")
+        # Merge consecutive turns from the same speaker. Granola chunks
+        # transcript turns at silence/pause boundaries; without merging, a
+        # continuous spoken sentence ends up split across multiple
+        # `<speaker>:`-prefixed lines, which prevents the substring
+        # verifier from matching quotes that span turn boundaries.
+        current_speaker: str | None = None
+        current_buffer: list[str] = []
         for turn in note.transcript:
             speaker = _speaker_label(turn.get("speaker"))
-            text = turn.get("text") or ""
-            if text:
-                parts.append(f"{speaker}: {text}")
+            text = (turn.get("text") or "").strip()
+            if not text:
+                continue
+            if speaker == current_speaker:
+                current_buffer.append(text)
+            else:
+                if current_buffer and current_speaker is not None:
+                    parts.append(f"{current_speaker}: {' '.join(current_buffer)}")
+                current_speaker = speaker
+                current_buffer = [text]
+        if current_buffer and current_speaker is not None:
+            parts.append(f"{current_speaker}: {' '.join(current_buffer)}")
 
     return "\n".join(parts)
 
