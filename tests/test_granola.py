@@ -9,27 +9,27 @@ from mnexa import ingest as ingest_mod
 from mnexa.ingest import classify_target
 
 
-def test_classify_granola_note_url() -> None:
-    t = classify_target("https://app.granola.ai/notes/abc12345")
+def test_classify_granola_note_id_bare() -> None:
+    t = classify_target("not_1d3tmYTlCICgjy")
     assert t.kind == "granola-note"
-    assert t.external_id == "abc12345"
+    assert t.external_id == "not_1d3tmYTlCICgjy"
 
 
 def test_classify_granola_note_scheme() -> None:
-    t = classify_target("granola://note/abc12345")
+    t = classify_target("granola://note/not_1d3tmYTlCICgjy")
     assert t.kind == "granola-note"
-    assert t.external_id == "abc12345"
+    assert t.external_id == "not_1d3tmYTlCICgjy"
+
+
+def test_classify_granola_share_url_rejected_with_hint() -> None:
+    with pytest.raises(typer.BadParameter, match="note ID"):
+        classify_target("https://notes.granola.ai/d/f3e45e0f-24cc-480b-9a6c-8b1f5e3d7a2c")
 
 
 def test_classify_granola_list_bare() -> None:
     t = classify_target("granola")
     assert t.kind == "granola-list"
     assert t.since is None
-
-
-def test_classify_granola_list_recent() -> None:
-    t = classify_target("granola://recent")
-    assert t.kind == "granola-list"
 
 
 def test_classify_granola_list_with_since() -> None:
@@ -45,52 +45,72 @@ def test_classify_granola_unknown_form_errors() -> None:
 
 def test_load_granola_source_renders_text() -> None:
     """Verify _load_granola_source flattens a note into IngestSource cleanly."""
-    from mnexa.granola.client import GranolaNote
+    from mnexa.granola.client import GranolaNote, GranolaUser
 
     note = GranolaNote(
-        note_id="abc12345",
+        note_id="not_1d3tmYTlCICgjy",
         title="Design review",
-        summary="Decided to ship the feature next week.",
-        transcript=[
-            {"speaker": "Alice", "text": "Let's ship it."},
-            {"speaker": "Bob", "text": "Agreed."},
-        ],
         created_at="2026-04-15T14:00:00Z",
-        modified_at="2026-04-15T15:30:00Z",
-        owner_name="Alice Smith",
-        owner_email="alice@example.com",
-        participants=["Alice Smith", "Bob Jones"],
+        updated_at="2026-04-15T15:30:00Z",
+        owner=GranolaUser(name="Alice Smith", email="alice@example.com"),
+        web_url="https://notes.granola.ai/d/abc-123",
+        summary_text="Decided to ship the feature next week.",
+        summary_markdown="## Decision\n\nShip next week.",
+        transcript=[
+            {"speaker": {"source": "microphone", "diarization_label": "Speaker A"},
+             "text": "Let's ship it."},
+            {"speaker": {"source": "speaker"}, "text": "Agreed."},
+        ],
+        attendees=[
+            GranolaUser(name="Alice Smith", email="alice@example.com"),
+            GranolaUser(name="Bob Jones", email="bob@example.com"),
+        ],
+        folder_names=["Engineering"],
         raw={},
     )
     fake_client = MagicMock()
     fake_client.get_note.return_value = note
 
-    source = ingest_mod._load_granola_source("abc12345", fake_client)  # pyright: ignore[reportPrivateUsage]
+    source = ingest_mod._load_granola_source("not_1d3tmYTlCICgjy", fake_client)  # pyright: ignore[reportPrivateUsage]
 
     assert source.filename == "Design review"
-    assert "Decided to ship the feature next week." in source.text
-    assert "Alice: Let's ship it." in source.text
-    assert source.source_path == "granola://abc12345"
+    assert "Ship next week" in source.text  # uses markdown summary preferentially
+    assert "Speaker A: Let's ship it." in source.text
+    assert "speaker: Agreed." in source.text
+    assert source.source_path == "granola://not_1d3tmYTlCICgjy"
     assert source.granola_meta is not None
-    assert source.granola_meta.note_id == "abc12345"
-    assert source.granola_meta.participants == ["Alice Smith", "Bob Jones"]
-    assert source.granola_meta.web_view_link == "https://app.granola.ai/notes/abc12345"
+    assert source.granola_meta.note_id == "not_1d3tmYTlCICgjy"
+    assert source.granola_meta.attendees == ["Alice Smith", "Bob Jones"]
+    assert source.granola_meta.folder_names == ["Engineering"]
+    assert source.granola_meta.web_url == "https://notes.granola.ai/d/abc-123"
+    assert source.granola_meta.updated_at == "2026-04-15T15:30:00Z"
 
 
 def test_render_note_text_handles_minimal_note() -> None:
-    from mnexa.granola.client import GranolaNote, render_note_text
+    from mnexa.granola.client import GranolaNote, GranolaUser, render_note_text
 
     note = GranolaNote(
-        note_id="x",
+        note_id="not_xxxxxxxxxxxxxx",
         title="Quick sync",
-        summary="",
-        transcript=[],
         created_at="",
-        modified_at="",
-        owner_name=None,
-        owner_email=None,
-        participants=[],
+        updated_at="",
+        owner=GranolaUser(name=None, email=""),
+        web_url="",
+        summary_text="",
+        summary_markdown=None,
+        transcript=[],
+        attendees=[],
+        folder_names=[],
         raw={},
     )
     text = render_note_text(note)
     assert "Quick sync" in text
+
+
+def test_speaker_label_handles_dict_and_string() -> None:
+    from mnexa.granola.client import _speaker_label  # pyright: ignore[reportPrivateUsage]
+
+    assert _speaker_label({"source": "microphone", "diarization_label": "Speaker A"}) == "Speaker A"  # pyright: ignore[reportPrivateUsage]
+    assert _speaker_label({"source": "speaker"}) == "speaker"  # pyright: ignore[reportPrivateUsage]
+    assert _speaker_label("Alice") == "Alice"  # pyright: ignore[reportPrivateUsage]
+    assert _speaker_label(None) == "speaker"  # pyright: ignore[reportPrivateUsage]

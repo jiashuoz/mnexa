@@ -101,7 +101,7 @@ Granola meeting notes work the same way: same `mnexa ingest` command, transport 
 
 1. Generate a personal API key at <https://app.granola.ai> (Business or Enterprise plan required — Granola-side limitation).
 2. Set `GRANOLA_API_KEY` in your `.env`.
-3. `mnexa ingest "https://app.granola.ai/notes/<id>"` to ingest one meeting, or `mnexa ingest granola` to walk your entire notes list.
+3. `mnexa ingest granola://note/not_<14-char-id>` to ingest one meeting, or `mnexa ingest granola` to walk your entire notes list. (Granola's web share URLs `notes.granola.ai/d/<uuid>` use a different identifier than the API; you need the `not_*` note ID, not the share URL.)
 
 The big win for this source type is that **participants become entity pages**. After 30 ingested meetings, `entities/alice-smith.md` synthesises every topic you've discussed with her, with verifiable quotes from the transcripts. That's exactly what the wiki pattern is for.
 
@@ -110,15 +110,16 @@ Frontmatter on a Granola-sourced page:
 ```yaml
 type: source
 slug: 2026-04-15-design-review
-source_path: granola://abc123
-granola_note_id: abc123
+source_path: granola://not_1d3tmYTlCICgjy
+granola_note_id: not_1d3tmYTlCICgjy
 granola_created: "2026-04-15T14:00:00Z"
-granola_modified: "2026-04-15T15:30:00Z"
-granola_url: https://app.granola.ai/notes/abc123
-participants: ["Alice Smith", "Bob Jones"]
+granola_updated: "2026-04-15T15:30:00Z"
+granola_url: https://notes.granola.ai/d/<uuid>
+attendees: ["Alice Smith", "Bob Jones"]
+granola_folders: ["Engineering"]
 ```
 
-`mnexa ingest granola` is idempotent — it walks the notes list, reads existing source-page frontmatter, and skips notes whose `granola_modified` matches.
+`mnexa ingest granola` is idempotent — it walks the notes list, reads existing source-page frontmatter, and skips notes whose `granola_updated` matches. Use `--since YYYY-MM-DD` to only fetch notes updated after a given date.
 
 ## LLM
 
@@ -143,7 +144,7 @@ Provider-agnostic via a small `LLMClient` protocol. v0 ships Google Gemini (defa
 
 ```bash
 uv sync --all-extras
-uv run pytest         # 53 tests
+uv run pytest         # 54 tests
 uv run ruff check .
 uv run pyright        # strict
 ```

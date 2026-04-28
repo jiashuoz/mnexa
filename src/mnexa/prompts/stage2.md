@@ -15,12 +15,13 @@ Your inputs (in the user message):
   MUST include exactly: `drive_file_id`, `drive_modified`, `drive_url`,
   `drive_path`, `mime_type` — copying values verbatim from `<drive_meta>`.
 - `<granola_meta>` (optional): present only when the source is a Granola
-  meeting note. Contains `note_id`, `created_at`, `modified_at`,
-  `web_view_link`, `participants`. When present, the source page's
+  meeting note. Contains `note_id`, `created_at`, `updated_at`,
+  `web_url`, `attendees`, `folders`. When present, the source page's
   frontmatter MUST include: `granola_note_id`, `granola_created`,
-  `granola_modified`, `granola_url`, `participants` (as a YAML list) —
-  copying values verbatim. **Quote timestamp values** to keep them as
-  strings (e.g., `granola_modified: "2026-04-15T15:30:00Z"`).
+  `granola_updated`, `granola_url`, `attendees` (as a YAML list of names),
+  and optionally `granola_folders` (as a YAML list) — copying values
+  verbatim. **Quote timestamp values** to keep them as strings (e.g.,
+  `granola_updated: "2026-04-15T15:30:00Z"`).
 - For all external sources, set `source_path:` to the value provided in
   the `<source>` tag (`drive://<id>`, `granola://<id>`, or `raw/<filename>`
   for local).

@@ -66,9 +66,10 @@ class DriveMeta:
 class GranolaMeta:
     note_id: str
     created_at: str
-    modified_at: str
-    web_view_link: str
-    participants: list[str]
+    updated_at: str
+    web_url: str
+    attendees: list[str]
+    folder_names: list[str]
 
 
 @dataclass(frozen=True)
@@ -86,9 +87,12 @@ _DRIVE_FILE_RE = re.compile(r"/file/d/([a-zA-Z0-9_-]{8,})")
 _DRIVE_QUERY_ID_RE = re.compile(r"[?&]id=([a-zA-Z0-9_-]{8,})")
 _DRIVE_SCHEME_RE = re.compile(r"^drive://([a-zA-Z0-9_-]{8,})")
 
-_GRANOLA_NOTE_URL_RE = re.compile(r"app\.granola\.ai/notes/([a-zA-Z0-9_-]{8,})")
-_GRANOLA_NOTE_SCHEME_RE = re.compile(r"^granola://note/([a-zA-Z0-9_-]{8,})")
+_GRANOLA_NOTE_ID_RE = re.compile(r"(not_[a-zA-Z0-9]{14})")
+_GRANOLA_NOTE_SCHEME_RE = re.compile(r"^granola://note/(not_[a-zA-Z0-9]{14})$")
 _GRANOLA_SINCE_RE = re.compile(r"^granola://since/(.+)$")
+_GRANOLA_SHARE_URL_RE = re.compile(
+    r"notes\.granola\.ai/d/([a-f0-9-]{36})"
+)
 
 
 def classify_target(arg: str) -> IngestTarget:
@@ -103,11 +107,19 @@ def classify_target(arg: str) -> IngestTarget:
         return IngestTarget("drive-file", external_id=_extract_drive_file_id(arg))
 
     # Granola
-    if "granola.ai" in arg or arg.startswith("granola"):
-        for pattern in (_GRANOLA_NOTE_URL_RE, _GRANOLA_NOTE_SCHEME_RE):
-            m = pattern.search(arg)
-            if m:
-                return IngestTarget("granola-note", external_id=m.group(1))
+    if "granola.ai" in arg or arg.startswith("granola") or _GRANOLA_NOTE_ID_RE.fullmatch(arg):
+        if _GRANOLA_SHARE_URL_RE.search(arg):
+            raise typer.BadParameter(
+                "Granola share URLs (notes.granola.ai/d/<uuid>) use a "
+                "different identifier than the API. Pass the note ID "
+                "(format: not_<14 chars>) instead, e.g. "
+                "`mnexa ingest granola://note/not_1d3tmYTlCICgjy`."
+            )
+        m = _GRANOLA_NOTE_SCHEME_RE.search(arg)
+        if m:
+            return IngestTarget("granola-note", external_id=m.group(1))
+        if (m := _GRANOLA_NOTE_ID_RE.fullmatch(arg)):
+            return IngestTarget("granola-note", external_id=m.group(1))
         m = _GRANOLA_SINCE_RE.search(arg)
         if m:
             return IngestTarget("granola-list", since=m.group(1))
@@ -342,19 +354,20 @@ async def _ingest_granola_list(*, vault: Path, client: LLMClient,
                                granola_client: GranolaClient, yes: bool,
                                limit: int | None, since: str | None) -> None:
     typer.echo("[ingest] listing Granola notes…", err=True)
-    summaries = list(granola_client.list_notes(created_after=since))
+    # Use updated_after so we capture both new notes and edits to existing ones.
+    summaries = list(granola_client.list_notes(updated_after=since))
     if not summaries:
         typer.echo("[ingest] no notes returned", err=True)
         return
 
     existing = _existing_external_pages(
-        vault, id_field="granola_note_id", mtime_field="granola_modified",
+        vault, id_field="granola_note_id", mtime_field="granola_updated",
     )
     pending: list[GranolaNoteSummary] = []
     skipped = 0
     for s in summaries:
         prev = existing.get(s.note_id)
-        if prev is not None and prev.modified == s.modified_at:
+        if prev is not None and prev.modified == s.updated_at:
             skipped += 1
             continue
         pending.append(s)
@@ -469,6 +482,7 @@ def _load_granola_source(note_id: str, granola_client: GranolaClient) -> IngestS
             f"note {note_id} text is {len(text.encode('utf-8'))} bytes; "
             f"v0 limit is {MAX_SOURCE_BYTES}"
         )
+    attendee_displays = [a.display for a in note.attendees]
     return IngestSource(
         filename=note.title,
         text=text,
@@ -478,9 +492,10 @@ def _load_granola_source(note_id: str, granola_client: GranolaClient) -> IngestS
         granola_meta=GranolaMeta(
             note_id=note.note_id,
             created_at=note.created_at,
-            modified_at=note.modified_at,
-            web_view_link=note.url,
-            participants=note.participants,
+            updated_at=note.updated_at,
+            web_url=note.web_url,
+            attendees=attendee_displays,
+            folder_names=note.folder_names,
         ),
     )
 
@@ -663,14 +678,16 @@ def _drive_meta_block(meta: DriveMeta) -> str:
 
 
 def _granola_meta_block(meta: GranolaMeta) -> str:
-    participants = ", ".join(meta.participants) if meta.participants else ""
+    attendees = ", ".join(meta.attendees) if meta.attendees else ""
+    folders = ", ".join(meta.folder_names) if meta.folder_names else ""
     return (
         "<granola_meta>\n"
         f"note_id: {meta.note_id}\n"
         f"created_at: {meta.created_at}\n"
-        f"modified_at: {meta.modified_at}\n"
-        f"web_view_link: {meta.web_view_link}\n"
-        f"participants: {participants}\n"
+        f"updated_at: {meta.updated_at}\n"
+        f"web_url: {meta.web_url}\n"
+        f"attendees: {attendees}\n"
+        f"folders: {folders}\n"
         "</granola_meta>"
     )
 

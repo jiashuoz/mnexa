@@ -1,9 +1,13 @@
 # pyright: basic
-"""Thin REST wrapper around Granola's `/v1/notes` API.
+"""REST client for Granola's public API.
 
-Two operations: list notes (paginated, optionally `created_after`) and
-fetch one note (with transcript). Lazy-imports `httpx` so non-Granola
-callers don't pay the import cost.
+Spec: https://docs.granola.ai/api-reference/openapi.json
+Endpoints used:
+    GET /v1/notes              — list (paginated, with created_after / updated_after)
+    GET /v1/notes/{note_id}    — single note (with ?include=transcript)
+
+Auth: `Authorization: Bearer grn_<key>`. Personal API keys require a
+Granola Business or Enterprise plan (Granola-side limitation).
 """
 
 from __future__ import annotations
@@ -12,34 +16,44 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
-API_BASE = "https://api.granola.ai/v1"
+API_BASE = "https://public-api.granola.ai/v1"
 
 
 @dataclass
-class GranolaNote:
-    note_id: str
-    title: str
-    summary: str
-    transcript: list[dict[str, Any]]
-    created_at: str
-    modified_at: str
-    owner_name: str | None
-    owner_email: str | None
-    participants: list[str]
-    raw: dict[str, Any]  # everything else, in case we add fields later
+class GranolaUser:
+    name: str | None
+    email: str
 
     @property
-    def url(self) -> str:
-        return f"https://app.granola.ai/notes/{self.note_id}"
+    def display(self) -> str:
+        return self.name or self.email
 
 
 @dataclass
 class GranolaNoteSummary:
-    """List-endpoint shape — no transcript, just enough to decide if we ingest."""
+    """Shape of an item in `GET /v1/notes` response."""
     note_id: str
     title: str
     created_at: str
-    modified_at: str
+    updated_at: str
+    owner: GranolaUser
+
+
+@dataclass
+class GranolaNote:
+    """Shape of `GET /v1/notes/{id}?include=transcript` response."""
+    note_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    owner: GranolaUser
+    web_url: str
+    summary_text: str
+    summary_markdown: str | None
+    transcript: list[dict[str, Any]]
+    attendees: list[GranolaUser]
+    folder_names: list[str]
+    raw: dict[str, Any]  # everything else, in case fields are added
 
 
 class GranolaClient:
@@ -53,22 +67,33 @@ class GranolaClient:
         )
 
     def list_notes(
-        self, *, created_after: str | None = None, page_size: int = 100,
+        self,
+        *,
+        created_after: str | None = None,
+        updated_after: str | None = None,
+        page_size: int = 30,
     ) -> Iterator[GranolaNoteSummary]:
-        """Yield all notes, paginating via cursor."""
+        """Yield all notes, paginating via `cursor` until `hasMore` is false.
+
+        `page_size` is capped at 30 server-side (default 10).
+        """
         cursor: str | None = None
         while True:
-            params: dict[str, Any] = {"limit": page_size}
+            params: dict[str, Any] = {"page_size": min(page_size, 30)}
             if cursor:
                 params["cursor"] = cursor
             if created_after:
                 params["created_after"] = created_after
+            if updated_after:
+                params["updated_after"] = updated_after
             resp = self._client.get("/notes", params=params)
             resp.raise_for_status()
             data = resp.json()
-            for raw in data.get("notes", []) or data.get("data", []) or []:
-                yield _to_note_summary(raw)
-            cursor = data.get("next_cursor") or data.get("cursor")
+            for raw in data.get("notes", []):
+                yield _to_summary(raw)
+            if not data.get("hasMore"):
+                break
+            cursor = data.get("cursor")
             if not cursor:
                 break
 
@@ -83,65 +108,84 @@ class GranolaClient:
         self._client.close()
 
 
-def _to_note_summary(raw: dict[str, Any]) -> GranolaNoteSummary:
+def _to_user(raw: dict[str, Any] | None) -> GranolaUser:
+    raw = raw or {}
+    return GranolaUser(name=raw.get("name"), email=raw.get("email") or "")
+
+
+def _to_summary(raw: dict[str, Any]) -> GranolaNoteSummary:
     return GranolaNoteSummary(
         note_id=raw["id"],
         title=raw.get("title") or "(untitled)",
-        created_at=raw.get("created_at") or raw.get("createdAt") or "",
-        modified_at=raw.get("modified_at") or raw.get("modifiedAt") or "",
+        created_at=raw.get("created_at") or "",
+        updated_at=raw.get("updated_at") or "",
+        owner=_to_user(raw.get("owner")),
     )
 
 
 def _to_note(raw: dict[str, Any]) -> GranolaNote:
-    owner = raw.get("owner") or {}
-    participants_raw = raw.get("participants") or []
-    participants: list[str] = []
-    for p in participants_raw:
-        if isinstance(p, str):
-            participants.append(p)
-        elif isinstance(p, dict):
-            name = p.get("name") or p.get("email")
-            if name:
-                participants.append(name)
+    folder_names = [
+        f.get("name", "") for f in (raw.get("folder_membership") or [])
+        if isinstance(f, dict)
+    ]
+    attendees = [_to_user(a) for a in (raw.get("attendees") or [])]
     return GranolaNote(
         note_id=raw["id"],
         title=raw.get("title") or "(untitled)",
-        summary=raw.get("summary") or "",
+        created_at=raw.get("created_at") or "",
+        updated_at=raw.get("updated_at") or "",
+        owner=_to_user(raw.get("owner")),
+        web_url=raw.get("web_url") or "",
+        summary_text=raw.get("summary_text") or "",
+        summary_markdown=raw.get("summary_markdown"),
         transcript=raw.get("transcript") or [],
-        created_at=raw.get("created_at") or raw.get("createdAt") or "",
-        modified_at=raw.get("modified_at") or raw.get("modifiedAt") or "",
-        owner_name=(owner.get("name") if isinstance(owner, dict) else None),
-        owner_email=(owner.get("email") if isinstance(owner, dict) else None),
-        participants=participants,
+        attendees=attendees,
+        folder_names=folder_names,
         raw=raw,
     )
 
 
 def render_note_text(note: GranolaNote) -> str:
-    """Flatten a GranolaNote into the plain text we feed to the LLM."""
+    """Flatten a GranolaNote into plain text for the LLM."""
     parts: list[str] = []
     parts.append(f"# {note.title}\n")
-    if note.owner_name or note.owner_email:
-        owner = note.owner_name or note.owner_email
-        parts.append(f"Owner: {owner}")
-    if note.participants:
-        parts.append("Participants: " + ", ".join(note.participants))
+
+    if note.owner.email:
+        parts.append(f"Owner: {note.owner.display}")
+    if note.attendees:
+        parts.append("Attendees: " + ", ".join(a.display for a in note.attendees))
+    if note.folder_names:
+        parts.append("Folders: " + ", ".join(note.folder_names))
     if note.created_at:
         parts.append(f"Created: {note.created_at}")
+    if note.updated_at and note.updated_at != note.created_at:
+        parts.append(f"Updated: {note.updated_at}")
     parts.append("")
-    if note.summary:
+
+    summary = note.summary_markdown or note.summary_text
+    if summary:
         parts.append("## Summary\n")
-        parts.append(note.summary)
+        parts.append(summary)
         parts.append("")
+
     if note.transcript:
         parts.append("## Transcript\n")
         for turn in note.transcript:
-            speaker = (
-                turn.get("speaker")
-                or turn.get("diarization_label")
-                or "speaker"
-            )
+            speaker = _speaker_label(turn.get("speaker"))
             text = turn.get("text") or ""
             if text:
                 parts.append(f"{speaker}: {text}")
+
     return "\n".join(parts)
+
+
+def _speaker_label(speaker: Any) -> str:
+    """Flatten Granola's `{source, diarization_label?}` into a short label."""
+    if isinstance(speaker, str):
+        return speaker
+    if isinstance(speaker, dict):
+        if label := speaker.get("diarization_label"):
+            return str(label)
+        if source := speaker.get("source"):
+            return str(source)
+    return "speaker"

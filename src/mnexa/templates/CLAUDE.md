@@ -60,11 +60,12 @@ drive_path: <path inside Drive>
 mime_type: <Drive mime type>
 
 # Granola-only (present iff source is a Granola meeting note):
-granola_note_id: <Granola note ID>
+granola_note_id: not_<14 chars>
 granola_created: "<RFC 3339>"
-granola_modified: "<RFC 3339>"
-granola_url: https://app.granola.ai/notes/<id>
-participants: ["Alice Smith", "Bob Jones"]
+granola_updated: "<RFC 3339>"
+granola_url: https://notes.granola.ai/d/<uuid>
+attendees: ["Alice Smith", "Bob Jones"]
+granola_folders: ["Top secret recipes"]   # optional
 ---
 ```
 
