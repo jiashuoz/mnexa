@@ -1,6 +1,6 @@
 # Mnexa
 
-A disciplined wiki maintainer for a personal markdown knowledge base. You drop documents into `raw/`; an LLM reads them and maintains a structured wiki of source / entity / concept pages with cross-references, an index, and a log. You curate; the LLM does the bookkeeping.
+A disciplined wiki maintainer for a personal markdown knowledge base. Throw any file at it — local, a folder, a Google Drive URL — and an LLM reads it and maintains a structured wiki of source / entity / concept pages with cross-references, an index, and a log. You curate; the LLM does the bookkeeping.
 
 Implementation of the pattern in [Andrej Karpathy's LLM Wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — read that first; it's the design spec.
 
@@ -10,32 +10,38 @@ Most LLM document tools are RAG: retrieve chunks at query time, generate from th
 
 ## Install
 
-Requires Python 3.12+ and [`uv`](https://github.com/astral-sh/uv). Get a Gemini API key at <https://aistudio.google.com/apikey>.
+Requires Python 3.12+. Get a Gemini API key at <https://aistudio.google.com/apikey>.
 
 ```bash
-git clone https://github.com/jiashuoz/mnexa
-cd mnexa
-uv sync
-cp .env.example .env   # then paste your GOOGLE_API_KEY
+# from PyPI
+uv tool install mnexa            # or: pip install mnexa
+# or for development
+git clone https://github.com/jiashuoz/mnexa && cd mnexa && uv sync
 ```
+
+Set `GOOGLE_API_KEY` in your shell or in a `.env` file at the vault root. See [`.env.example`](.env.example).
 
 ## Use
 
 ```bash
 # Create a new vault
-uv run mnexa init ~/my-vault
-
-# Drop a source into raw/, then ingest
-cp some-paper.pdf ~/my-vault/raw/
+mnexa init ~/my-vault
 cd ~/my-vault
-uv run --project /path/to/mnexa mnexa ingest raw/some-paper.pdf
+
+# Ingest anything — local file, local folder, or Google Drive URL
+mnexa ingest paper.pdf
+mnexa ingest ~/Documents/papers/
+mnexa ingest "https://drive.google.com/drive/folders/<id>"
+mnexa ingest "https://drive.google.com/file/d/<id>"
 
 # Ask the wiki a question
-uv run --project /path/to/mnexa mnexa query "what does this paper claim?"
+mnexa query "what does this paper claim?"
 
 # Audit the wiki
-uv run --project /path/to/mnexa mnexa lint
+mnexa lint
 ```
+
+Folder ingests support `--yes` / `-y` to skip confirmation and `--limit N` to cap files per run. Re-running an ingest on a folder skips files whose source hasn't changed (Drive: by `modifiedTime`; local: by content hash).
 
 ## Vault layout
 
@@ -65,9 +71,24 @@ Every successful ingest is a git commit. Free undo, free history, free diff.
 
 The substring verifier is the anti-hallucination floor. If the LLM invents a biographical detail not present in the source, the marker check fails and the ingest aborts with no on-disk changes.
 
-**Query** is a single LLM call against `index.md` + the top-N pages by keyword overlap, streamed to stdout with inline `[[wikilink]]` citations. Logged to `log.md`.
+**Query** is a single LLM call against `index.md` + the top-N pages by keyword overlap, streamed to stdout with inline `[[wikilink]]` citations. Drive-sourced pages carry `drive_url:` in their frontmatter, so query answers naturally surface clickable Drive links when relevant — no separate "find files" command.
 
 **Lint** runs deterministic checks first (broken links, frontmatter, index/wiki sync, orphans, ungrounded pages, slug style), then one LLM call for semantic checks (contradictions, stale claims, missing pages, slug typos). Output: `.mnexa/lint/<timestamp>.md`.
+
+## Google Drive
+
+Drive is a transport, not a separate concept. Same `mnexa ingest` command takes a Drive URL or a folder URL; mnexa fetches content in memory, ingests, and stores Drive metadata (`drive_file_id`, `drive_modified`, `drive_url`, `drive_path`, `mime_type`) in the resulting source page's frontmatter. Originals stay in Drive — nothing is downloaded to `raw/`.
+
+Re-syncing is idempotent: walking a folder again skips files whose `drive_modified` matches what's already on disk. Source-page depth adapts to content — a paper gets a full structured page; a tax form or receipt gets a brief one without entity/concept synthesis.
+
+**One-time GCP setup** (required for Drive):
+
+1. Create a project at <https://console.cloud.google.com> and enable the Google Drive API.
+2. Create OAuth credentials → "Desktop app" → download the JSON.
+3. Set `MNEXA_GOOGLE_CLIENT_ID` and `MNEXA_GOOGLE_CLIENT_SECRET` in your `.env`.
+4. On the OAuth consent screen, set User Type = **External**, Publishing status = **Testing**, scope = `drive.readonly`, and add yourself as a test user.
+
+First Drive ingest opens a browser for OAuth; the refresh token is cached at `~/.config/mnexa/google-token.json` and used silently after that.
 
 ## LLM
 
@@ -78,12 +99,14 @@ Provider-agnostic via a small `LLMClient` protocol. v0 ships Google Gemini (defa
 | | |
 |---|---|
 | `mnexa init` | ✅ |
-| `mnexa ingest` | ✅ (`.md`, `.txt`, `.pdf`, `.docx`) |
+| `mnexa ingest` (local file / folder) | ✅ — `.md`, `.txt`, `.pdf`, `.docx` |
+| `mnexa ingest` (Google Drive file / folder) | ✅ — adaptive-depth, idempotent re-sync |
 | `mnexa query` | ✅ |
 | `mnexa lint` | ✅ |
 | `mnexa lint --fix` | not yet (v0.1) |
 | save query answer as wiki page | not yet (v0.1) |
 | Anthropic / OpenAI providers | not yet |
+| Notion / Granola / other sources | planned |
 
 ## Develop
 
