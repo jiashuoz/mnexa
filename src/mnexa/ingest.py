@@ -22,6 +22,7 @@ import typer
 
 if TYPE_CHECKING:
     from mnexa.drive.client import DriveClient, DriveFile
+    from mnexa.granola.client import GranolaClient, GranolaNoteSummary
 
 from mnexa import storage
 from mnexa.llm import LLMClient, Usage, get_client
@@ -37,14 +38,19 @@ FOLDER_CONFIRM_THRESHOLD = 5
 # --- target classification & data shapes -----------------------------------
 
 
-TargetKind = Literal["local-file", "local-folder", "drive-file", "drive-folder"]
+TargetKind = Literal[
+    "local-file", "local-folder",
+    "drive-file", "drive-folder",
+    "granola-note", "granola-list",
+]
 
 
 @dataclass(frozen=True)
 class IngestTarget:
     kind: TargetKind
     local_path: Path | None = None
-    drive_id: str | None = None
+    external_id: str | None = None
+    since: str | None = None  # only used by granola-list
 
 
 @dataclass(frozen=True)
@@ -57,12 +63,22 @@ class DriveMeta:
 
 
 @dataclass(frozen=True)
+class GranolaMeta:
+    note_id: str
+    created_at: str
+    modified_at: str
+    web_view_link: str
+    participants: list[str]
+
+
+@dataclass(frozen=True)
 class IngestSource:
-    filename: str       # display name, e.g., "foo.pdf"
+    filename: str       # display name, e.g., "foo.pdf" or "Design review"
     text: str           # parsed plain text fed to the LLM
     hash: str           # sha256 of raw bytes (for change detection)
-    source_path: str    # frontmatter source_path: "raw/foo.pdf" or "drive://<id>"
+    source_path: str    # frontmatter source_path: "raw/foo.pdf" / "drive://<id>" / "granola://<id>"
     drive_meta: DriveMeta | None = None
+    granola_meta: GranolaMeta | None = None
 
 
 _DRIVE_FOLDER_RE = re.compile(r"/folders/([a-zA-Z0-9_-]{8,})")
@@ -70,21 +86,43 @@ _DRIVE_FILE_RE = re.compile(r"/file/d/([a-zA-Z0-9_-]{8,})")
 _DRIVE_QUERY_ID_RE = re.compile(r"[?&]id=([a-zA-Z0-9_-]{8,})")
 _DRIVE_SCHEME_RE = re.compile(r"^drive://([a-zA-Z0-9_-]{8,})")
 
+_GRANOLA_NOTE_URL_RE = re.compile(r"app\.granola\.ai/notes/([a-zA-Z0-9_-]{8,})")
+_GRANOLA_NOTE_SCHEME_RE = re.compile(r"^granola://note/([a-zA-Z0-9_-]{8,})")
+_GRANOLA_SINCE_RE = re.compile(r"^granola://since/(.+)$")
+
 
 def classify_target(arg: str) -> IngestTarget:
     arg = arg.strip()
-    is_drive_url = "drive.google.com" in arg or arg.startswith("drive://")
-    if is_drive_url:
+
+    # Drive
+    if "drive.google.com" in arg or arg.startswith("drive://"):
         if "/folders/" in arg:
-            return IngestTarget("drive-folder", drive_id=_extract_drive_folder_id(arg))
-        return IngestTarget("drive-file", drive_id=_extract_drive_file_id(arg))
+            return IngestTarget(
+                "drive-folder", external_id=_extract_drive_folder_id(arg)
+            )
+        return IngestTarget("drive-file", external_id=_extract_drive_file_id(arg))
+
+    # Granola
+    if "granola.ai" in arg or arg.startswith("granola"):
+        for pattern in (_GRANOLA_NOTE_URL_RE, _GRANOLA_NOTE_SCHEME_RE):
+            m = pattern.search(arg)
+            if m:
+                return IngestTarget("granola-note", external_id=m.group(1))
+        m = _GRANOLA_SINCE_RE.search(arg)
+        if m:
+            return IngestTarget("granola-list", since=m.group(1))
+        if arg in {"granola", "granola://", "granola://recent"}:
+            return IngestTarget("granola-list")
+        raise typer.BadParameter(f"unrecognized Granola argument: {arg!r}")
+
+    # Local
     p = Path(arg).expanduser()
     if p.is_dir():
         return IngestTarget("local-folder", local_path=p.resolve())
     if p.is_file():
         return IngestTarget("local-file", local_path=p.resolve())
     raise typer.BadParameter(
-        f"can't interpret {arg!r} as a file, folder, or Drive URL"
+        f"can't interpret {arg!r} as a file, folder, or supported URL"
     )
 
 
@@ -107,12 +145,15 @@ def _extract_drive_file_id(url: str) -> str:
 
 
 def run(target: str | Path, *, client: LLMClient | None = None,
-        yes: bool = False, limit: int | None = None) -> None:
-    asyncio.run(_run_async(str(target), client=client, yes=yes, limit=limit))
+        yes: bool = False, limit: int | None = None,
+        since: str | None = None) -> None:
+    asyncio.run(_run_async(
+        str(target), client=client, yes=yes, limit=limit, since=since,
+    ))
 
 
 async def _run_async(target: str, *, client: LLMClient | None,
-                     yes: bool, limit: int | None) -> None:
+                     yes: bool, limit: int | None, since: str | None) -> None:
     vault = storage.find_vault(Path.cwd())
     if vault is None:
         typer.echo(
@@ -138,25 +179,50 @@ async def _run_async(target: str, *, client: LLMClient | None,
         return
 
     if tgt.kind == "drive-file":
-        assert tgt.drive_id is not None
+        assert tgt.external_id is not None
         from mnexa.drive.auth import get_credentials
         from mnexa.drive.client import DriveClient
         creds = get_credentials()
         drive_client = DriveClient(creds)
-        source = _load_drive_source(tgt.drive_id, drive_client)
+        source = _load_drive_source(tgt.external_id, drive_client)
         await _ingest_one(source, vault=vault, client=client)
         return
 
     if tgt.kind == "drive-folder":
-        assert tgt.drive_id is not None
+        assert tgt.external_id is not None
         from mnexa.drive.auth import get_credentials
         from mnexa.drive.client import DriveClient
         creds = get_credentials()
         drive_client = DriveClient(creds)
         await _ingest_drive_folder(
-            tgt.drive_id, vault=vault, client=client,
+            tgt.external_id, vault=vault, client=client,
             drive_client=drive_client, yes=yes, limit=limit,
         )
+        return
+
+    if tgt.kind == "granola-note":
+        assert tgt.external_id is not None
+        from mnexa.granola.auth import get_api_key
+        from mnexa.granola.client import GranolaClient
+        gc = GranolaClient(get_api_key())
+        try:
+            source = _load_granola_source(tgt.external_id, gc)
+            await _ingest_one(source, vault=vault, client=client)
+        finally:
+            gc.close()
+        return
+
+    if tgt.kind == "granola-list":
+        from mnexa.granola.auth import get_api_key
+        from mnexa.granola.client import GranolaClient
+        gc = GranolaClient(get_api_key())
+        try:
+            await _ingest_granola_list(
+                vault=vault, client=client, granola_client=gc,
+                yes=yes, limit=limit, since=since or tgt.since,
+            )
+        finally:
+            gc.close()
         return
 
 
@@ -164,27 +230,33 @@ async def _run_async(target: str, *, client: LLMClient | None,
 
 
 @dataclass(frozen=True)
-class _ExistingDrivePage:
+class _ExistingExternalPage:
     path: Path
-    drive_modified: str | None
+    modified: str | None
     hash: str | None
 
 
-def _existing_drive_pages(vault: Path) -> dict[str, _ExistingDrivePage]:
-    """Map drive_file_id → existing wiki page metadata, by reading frontmatter."""
-    out: dict[str, _ExistingDrivePage] = {}
+def _existing_external_pages(
+    vault: Path, *, id_field: str, mtime_field: str,
+) -> dict[str, _ExistingExternalPage]:
+    """Map external-id → existing wiki page metadata, by reading frontmatter.
+
+    Generic over the id field (`drive_file_id`, `granola_note_id`, etc.) and
+    the corresponding modified-time field.
+    """
+    out: dict[str, _ExistingExternalPage] = {}
     sources = vault / "wiki" / "sources"
     if not sources.is_dir():
         return out
     for p in sources.glob("*.md"):
         fm = storage.read_frontmatter(p)
-        fid = fm.get("drive_file_id")
-        if isinstance(fid, str) and fid:
-            mod = _normalize_timestamp(fm.get("drive_modified"))
+        ident = fm.get(id_field)
+        if isinstance(ident, str) and ident:
+            mod = _normalize_timestamp(fm.get(mtime_field))
             h = fm.get("hash")
-            out[fid] = _ExistingDrivePage(
+            out[ident] = _ExistingExternalPage(
                 path=p,
-                drive_modified=mod,
+                modified=mod,
                 hash=h if isinstance(h, str) else None,
             )
     return out
@@ -218,12 +290,14 @@ async def _ingest_drive_folder(folder_id: str, *, vault: Path, client: LLMClient
         typer.echo("[ingest] folder is empty", err=True)
         return
 
-    existing = _existing_drive_pages(vault)
+    existing = _existing_external_pages(
+        vault, id_field="drive_file_id", mtime_field="drive_modified",
+    )
     pending: list[tuple[str, DriveFile]] = []
     skipped = 0
     for drive_path, df in items:
         prev = existing.get(df.file_id)
-        if prev is not None and prev.drive_modified == df.modified_time:
+        if prev is not None and prev.modified == df.modified_time:
             skipped += 1
             continue
         pending.append((drive_path, df))
@@ -261,6 +335,64 @@ async def _ingest_drive_folder(folder_id: str, *, vault: Path, client: LLMClient
 
     typer.echo(
         f"[ingest] folder done · {succeeded} ingested · {failed} failed", err=True
+    )
+
+
+async def _ingest_granola_list(*, vault: Path, client: LLMClient,
+                               granola_client: GranolaClient, yes: bool,
+                               limit: int | None, since: str | None) -> None:
+    typer.echo("[ingest] listing Granola notes…", err=True)
+    summaries = list(granola_client.list_notes(created_after=since))
+    if not summaries:
+        typer.echo("[ingest] no notes returned", err=True)
+        return
+
+    existing = _existing_external_pages(
+        vault, id_field="granola_note_id", mtime_field="granola_modified",
+    )
+    pending: list[GranolaNoteSummary] = []
+    skipped = 0
+    for s in summaries:
+        prev = existing.get(s.note_id)
+        if prev is not None and prev.modified == s.modified_at:
+            skipped += 1
+            continue
+        pending.append(s)
+
+    if limit is not None:
+        pending = pending[:limit]
+
+    typer.echo(
+        f"[ingest] {len(summaries)} notes total · {len(pending)} new/changed · "
+        f"{skipped} unchanged",
+        err=True,
+    )
+    if not pending:
+        return
+
+    if (
+        not yes and len(pending) >= FOLDER_CONFIRM_THRESHOLD
+        and not typer.confirm(f"proceed with {len(pending)} ingests?")
+    ):
+        typer.echo("[ingest] aborted", err=True)
+        return
+
+    succeeded = 0
+    failed = 0
+    for i, s in enumerate(pending, 1):
+        typer.echo(f"[{i}/{len(pending)}] {s.title}", err=True)
+        try:
+            source = _load_granola_source(s.note_id, granola_client)
+            await _ingest_one(source, vault=vault, client=client)
+            succeeded += 1
+        except (RuntimeError, OSError, ValueError) as e:
+            typer.echo(f"  failed: {e}", err=True)
+            failed += 1
+            continue
+
+    typer.echo(
+        f"[ingest] granola list done · {succeeded} ingested · {failed} failed",
+        err=True,
     )
 
 
@@ -325,6 +457,31 @@ def _load_local_source(file: Path, vault: Path) -> IngestSource:
         hash=hashlib.sha256(raw_bytes).hexdigest(),
         source_path=f"raw/{file.name}",
         drive_meta=None,
+    )
+
+
+def _load_granola_source(note_id: str, granola_client: GranolaClient) -> IngestSource:
+    from mnexa.granola.client import render_note_text
+    note = granola_client.get_note(note_id)
+    text = render_note_text(note)
+    if len(text.encode("utf-8")) > MAX_SOURCE_BYTES:
+        raise ValueError(
+            f"note {note_id} text is {len(text.encode('utf-8'))} bytes; "
+            f"v0 limit is {MAX_SOURCE_BYTES}"
+        )
+    return IngestSource(
+        filename=note.title,
+        text=text,
+        hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        source_path=f"granola://{note.note_id}",
+        drive_meta=None,
+        granola_meta=GranolaMeta(
+            note_id=note.note_id,
+            created_at=note.created_at,
+            modified_at=note.modified_at,
+            web_view_link=note.url,
+            participants=note.participants,
+        ),
     )
 
 
@@ -505,16 +662,37 @@ def _drive_meta_block(meta: DriveMeta) -> str:
     )
 
 
+def _granola_meta_block(meta: GranolaMeta) -> str:
+    participants = ", ".join(meta.participants) if meta.participants else ""
+    return (
+        "<granola_meta>\n"
+        f"note_id: {meta.note_id}\n"
+        f"created_at: {meta.created_at}\n"
+        f"modified_at: {meta.modified_at}\n"
+        f"web_view_link: {meta.web_view_link}\n"
+        f"participants: {participants}\n"
+        "</granola_meta>"
+    )
+
+
+def _external_meta_block(source: IngestSource) -> str:
+    if source.drive_meta is not None:
+        return _drive_meta_block(source.drive_meta)
+    if source.granola_meta is not None:
+        return _granola_meta_block(source.granola_meta)
+    return ""
+
+
 def _build_stage1_user(
     *, index: str, related: list[Path], vault: Path, source: IngestSource
 ) -> str:
     related_block = _read_pages(related, vault) if related else "(none)"
-    drive_block = _drive_meta_block(source.drive_meta) if source.drive_meta else ""
+    meta_block = _external_meta_block(source)
     return (
         f"<index>\n{index}\n</index>\n\n"
         f"<related_pages>\n{related_block}\n</related_pages>\n\n"
         f'<source filename="{source.filename}">\n{source.text}\n</source>'
-        + (f"\n\n{drive_block}" if drive_block else "")
+        + (f"\n\n{meta_block}" if meta_block else "")
     )
 
 
@@ -523,12 +701,12 @@ def _build_stage2_user(
     existing: list[Path], today: str,
 ) -> str:
     existing_block = _read_pages(existing, vault) if existing else "(none)"
-    drive_block = _drive_meta_block(source.drive_meta) if source.drive_meta else ""
+    meta_block = _external_meta_block(source)
     return (
         f"<analysis>\n{analysis}\n</analysis>\n\n"
         f'<source filename="{source.filename}" hash="{source.hash}" '
         f'source_path="{source.source_path}">\n{source.text}\n</source>'
-        + (f"\n\n{drive_block}" if drive_block else "")
+        + (f"\n\n{meta_block}" if meta_block else "")
         + f"\n\n<existing_pages>\n{existing_block}\n</existing_pages>\n\n"
         f"<today>{today}</today>"
     )

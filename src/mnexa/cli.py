@@ -33,17 +33,20 @@ def init(
 def ingest(
     target: str = typer.Argument(
         ...,
-        help="A local file, local folder, Drive file URL, or Drive folder URL.",
+        help="A local file, local folder, Drive URL, or `granola[://...]`.",
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation prompts on folder ingests.",
     ),
     limit: int | None = typer.Option(
-        None, "--limit", help="Max files to ingest (folder mode).",
+        None, "--limit", help="Max files/notes to ingest (folder/list mode).",
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="ISO date for granola-list incremental fetch.",
     ),
 ) -> None:
-    """Ingest a file, folder, or Drive URL into the wiki."""
-    ingest_mod.run(target, yes=yes, limit=limit)
+    """Ingest a file, folder, Drive URL, or Granola notes into the wiki."""
+    ingest_mod.run(target, yes=yes, limit=limit, since=since)
 
 
 @app.command()

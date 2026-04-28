@@ -1,6 +1,6 @@
 # Mnexa
 
-A disciplined wiki maintainer for a personal markdown knowledge base. Throw any file at it — local, a folder, a Google Drive URL — and an LLM reads it and maintains a structured wiki of source / entity / concept pages with cross-references, an index, and a log. You curate; the LLM does the bookkeeping.
+A disciplined wiki maintainer for a personal markdown knowledge base. Throw any file at it — local, a folder, a Google Drive URL, or a Granola meeting note — and an LLM reads it and maintains a structured wiki of source / entity / concept pages with cross-references, an index, and a log. You curate; the LLM does the bookkeeping.
 
 Implementation of the pattern in [Andrej Karpathy's LLM Wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — read that first; it's the design spec.
 
@@ -28,11 +28,14 @@ Set `GOOGLE_API_KEY` in your shell or in a `.env` file at the vault root. See [`
 mnexa init ~/my-vault
 cd ~/my-vault
 
-# Ingest anything — local file, local folder, or Google Drive URL
+# Ingest anything — local file, local folder, Google Drive URL, or Granola
 mnexa ingest paper.pdf
 mnexa ingest ~/Documents/papers/
 mnexa ingest "https://drive.google.com/drive/folders/<id>"
 mnexa ingest "https://drive.google.com/file/d/<id>"
+mnexa ingest "https://app.granola.ai/notes/<id>"
+mnexa ingest granola                              # all your Granola notes
+mnexa ingest granola --since 2026-04-01           # incremental
 
 # Ask the wiki a question
 mnexa query "what does this paper claim?"
@@ -90,6 +93,33 @@ Re-syncing is idempotent: walking a folder again skips files whose `drive_modifi
 
 First Drive ingest opens a browser for OAuth; the refresh token is cached at `~/.config/mnexa/google-token.json` and used silently after that.
 
+## Granola
+
+Granola meeting notes work the same way: same `mnexa ingest` command, transport hidden. Auth is just a Bearer token — no OAuth dance.
+
+**Setup**:
+
+1. Generate a personal API key at <https://app.granola.ai> (Business or Enterprise plan required — Granola-side limitation).
+2. Set `GRANOLA_API_KEY` in your `.env`.
+3. `mnexa ingest "https://app.granola.ai/notes/<id>"` to ingest one meeting, or `mnexa ingest granola` to walk your entire notes list.
+
+The big win for this source type is that **participants become entity pages**. After 30 ingested meetings, `entities/alice-smith.md` synthesises every topic you've discussed with her, with verifiable quotes from the transcripts. That's exactly what the wiki pattern is for.
+
+Frontmatter on a Granola-sourced page:
+
+```yaml
+type: source
+slug: 2026-04-15-design-review
+source_path: granola://abc123
+granola_note_id: abc123
+granola_created: "2026-04-15T14:00:00Z"
+granola_modified: "2026-04-15T15:30:00Z"
+granola_url: https://app.granola.ai/notes/abc123
+participants: ["Alice Smith", "Bob Jones"]
+```
+
+`mnexa ingest granola` is idempotent — it walks the notes list, reads existing source-page frontmatter, and skips notes whose `granola_modified` matches.
+
 ## LLM
 
 Provider-agnostic via a small `LLMClient` protocol. v0 ships Google Gemini (default `gemini-3-flash-preview`). Set `MNEXA_MODEL` to any `gemini-*` model; set `MNEXA_PROVIDER` to override the auto-inference. Adding Anthropic or OpenAI is ~80 lines plus an extras entry — not shipped because no one needs it yet.
@@ -101,18 +131,19 @@ Provider-agnostic via a small `LLMClient` protocol. v0 ships Google Gemini (defa
 | `mnexa init` | ✅ |
 | `mnexa ingest` (local file / folder) | ✅ — `.md`, `.txt`, `.pdf`, `.docx` |
 | `mnexa ingest` (Google Drive file / folder) | ✅ — adaptive-depth, idempotent re-sync |
+| `mnexa ingest` (Granola meeting notes) | ✅ — single note or full list, incremental via `--since` |
 | `mnexa query` | ✅ |
 | `mnexa lint` | ✅ |
 | `mnexa lint --fix` | not yet (v0.1) |
 | save query answer as wiki page | not yet (v0.1) |
 | Anthropic / OpenAI providers | not yet |
-| Notion / Granola / other sources | planned |
+| Notion / other sources | planned |
 
 ## Develop
 
 ```bash
 uv sync --all-extras
-uv run pytest         # 45 tests
+uv run pytest         # 53 tests
 uv run ruff check .
 uv run pyright        # strict
 ```
