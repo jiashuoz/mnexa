@@ -773,11 +773,13 @@ async def _ingest_one(source: IngestSource, *, vault: Path, client: LLMClient) -
         typer.echo("  no changes (Stage 2 emitted no FILE blocks)", err=True)
         return
 
-    # Strict substring grounding for prose-like sources (papers, articles,
-    # PDFs) where verbatim quoting survives. Relaxed for transcript-style
-    # sources (Granola meetings) where the LLM must paraphrase to make
-    # spoken language readable.
-    require_substring = source.granola_meta is None
+    # Strict substring grounding for stable-text sources (local files, PDFs
+    # via Drive) where the LLM has no reason to paraphrase and verbatim
+    # quoting survives. Relaxed for sources where the LLM must paraphrase
+    # to bridge structural breaks: transcript chunking (Granola), markdown
+    # formatting + i18n (GitHub). For relaxed sources, click-through to
+    # the canonical URL in frontmatter is the verification path.
+    require_substring = source.granola_meta is None and source.github_meta is None
     verify_grounding(blocks, source.text, require_substring=require_substring)
 
     pages = {b.abs_path: b.raw_content for b in blocks}
