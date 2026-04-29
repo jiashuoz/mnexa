@@ -41,7 +41,7 @@ _URL_RE = re.compile(r"https?://\S+")
 # disappear from transcripts in possessives and contractions, and the LLM
 # usually drops them when quoting. Strip rather than substitute with space
 # so "Anthropic's" can match a paraphrased "anthropics".
-_APOSTROPHE_RE = re.compile(r"[’ʼ'`]")
+_APOSTROPHE_RE = re.compile(r"[’ʼ'`]")  # noqa: RUF001
 
 
 def _normalize_for_match(s: str) -> str:
@@ -62,32 +62,42 @@ def _normalize_for_match(s: str) -> str:
     return " ".join(s.split()).lower()
 
 
-def verify_grounding(blocks: list[FileBlock], source_text: str) -> None:
-    """Substring-verify ⟦"..."⟧ source-quote markers.
+def verify_grounding(
+    blocks: list[FileBlock],
+    source_text: str,
+    *,
+    require_substring: bool = True,
+) -> None:
+    """Verify ⟦"..."⟧ source-quote markers.
 
-    Each marker's contents must appear (after normalizing markdown emphasis
-    and whitespace) in either:
-      - the current `source_text`, or
-      - the prior contents of the same page being updated (so that markers
-        grounded by an earlier ingest survive re-ingest).
+    Two checks:
+      1. **Marker presence** (always): entity/concept pages must contain
+         at least one marker — the LLM has to commit to evidence on
+         synthesised pages.
+      2. **Marker grounding** (when `require_substring=True`): each marker's
+         contents must appear (after normalisation) in either the current
+         `source_text` or the prior contents of the same page being updated.
 
-    Entity and concept pages MUST carry at least one marker.
+    Set `require_substring=False` for transcript-style sources where the
+    LLM must paraphrase to make spoken language readable (verb tenses,
+    filler words, ASR artifacts). Marker presence is still required;
+    only literal substring matching is relaxed.
     """
-    norm_source = _normalize_for_match(source_text)
+    norm_source = _normalize_for_match(source_text) if require_substring else ""
     for block in blocks:
-        existing = ""
-        if block.abs_path.is_file():
-            existing = block.abs_path.read_text(encoding="utf-8")
-        norm_existing = _normalize_for_match(existing)
-
         markers = _MARKER_RE.findall(block.raw_content)
-        for span in markers:
-            ns = _normalize_for_match(span)
-            if ns not in norm_source and ns not in norm_existing:
-                raise IngestError(
-                    f"{block.rel_path}: source-quote marker not found in "
-                    f"current source or prior page content: {span!r}"
-                )
+        if require_substring:
+            existing = ""
+            if block.abs_path.is_file():
+                existing = block.abs_path.read_text(encoding="utf-8")
+            norm_existing = _normalize_for_match(existing)
+            for span in markers:
+                ns = _normalize_for_match(span)
+                if ns not in norm_source and ns not in norm_existing:
+                    raise IngestError(
+                        f"{block.rel_path}: source-quote marker not found in "
+                        f"current source or prior page content: {span!r}"
+                    )
         type_ = block.frontmatter.get("type")
         if type_ in {"entity", "concept"} and not markers:
             raise IngestError(

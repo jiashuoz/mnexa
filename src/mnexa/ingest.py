@@ -584,7 +584,12 @@ async def _ingest_one(source: IngestSource, *, vault: Path, client: LLMClient) -
         typer.echo("  no changes (Stage 2 emitted no FILE blocks)", err=True)
         return
 
-    verify_grounding(blocks, source.text)
+    # Strict substring grounding for prose-like sources (papers, articles,
+    # PDFs) where verbatim quoting survives. Relaxed for transcript-style
+    # sources (Granola meetings) where the LLM must paraphrase to make
+    # spoken language readable.
+    require_substring = source.granola_meta is None
+    verify_grounding(blocks, source.text, require_substring=require_substring)
 
     pages = {b.abs_path: b.raw_content for b in blocks}
     try:

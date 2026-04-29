@@ -222,6 +222,25 @@ def test_grounding_skips_index_and_log(tmp_path: Path) -> None:
     verify_grounding(blocks, SOURCE)  # does not raise
 
 
+def test_grounding_skips_substring_check_when_not_required(tmp_path: Path) -> None:
+    """For transcript-style sources, marker text doesn't need to be a substring."""
+    vault = _vault(tmp_path)
+    text = _entity_block(
+        'Bush invented all sorts of things ⟦"invented all sorts of things"⟧.'
+    )
+    blocks = parse_file_blocks(text, vault)
+    # That span isn't in SOURCE — but with require_substring=False, allowed.
+    verify_grounding(blocks, SOURCE, require_substring=False)
+
+
+def test_grounding_still_requires_marker_when_substring_check_off(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    text = _entity_block("Bush proposed the Memex.")  # no marker
+    blocks = parse_file_blocks(text, vault)
+    with pytest.raises(IngestError, match="no source-quote markers"):
+        verify_grounding(blocks, SOURCE, require_substring=False)
+
+
 def test_grounding_accepts_marker_from_prior_page_content(tmp_path: Path) -> None:
     """Re-ingest preserves markers grounded by previous source."""
     vault = _vault(tmp_path)
