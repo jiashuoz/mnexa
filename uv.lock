@@ -659,6 +659,9 @@ drive = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
 ]
+github = [
+    { name = "httpx" },
+]
 granola = [
     { name = "httpx" },
 ]
@@ -685,6 +688,7 @@ requires-dist = [
     { name = "google-auth-httplib2", marker = "extra == 'drive'", specifier = ">=0.2" },
     { name = "google-auth-oauthlib", marker = "extra == 'drive'", specifier = ">=1.2" },
     { name = "google-genai", specifier = ">=1.0" },
+    { name = "httpx", marker = "extra == 'github'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'granola'", specifier = ">=0.27" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.50" },
     { name = "pdfplumber", marker = "extra == 'pdf'", specifier = ">=0.11" },
@@ -693,7 +697,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["anthropic", "openai", "pdf", "docx", "drive", "granola"]
+provides-extras = ["anthropic", "openai", "pdf", "docx", "drive", "granola", "github"]
 
 [package.metadata.requires-dev]
 dev = [

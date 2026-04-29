@@ -22,6 +22,7 @@ import typer
 
 if TYPE_CHECKING:
     from mnexa.drive.client import DriveClient, DriveFile
+    from mnexa.github.client import GitHubClient, GitHubFile
     from mnexa.granola.client import GranolaClient, GranolaNoteSummary
 
 from mnexa import storage
@@ -42,6 +43,7 @@ TargetKind = Literal[
     "local-file", "local-folder",
     "drive-file", "drive-folder",
     "granola-note", "granola-list",
+    "github-file", "github-repo",
 ]
 
 
@@ -51,6 +53,11 @@ class IngestTarget:
     local_path: Path | None = None
     external_id: str | None = None
     since: str | None = None  # only used by granola-list
+    # github-specific
+    github_owner: str | None = None
+    github_repo: str | None = None
+    github_branch: str | None = None  # None = default branch
+    github_path: str | None = None    # only for github-file kind
 
 
 @dataclass(frozen=True)
@@ -73,13 +80,24 @@ class GranolaMeta:
 
 
 @dataclass(frozen=True)
+class GitHubMeta:
+    owner: str
+    repo: str
+    branch: str
+    path: str
+    blob_sha: str
+    html_url: str
+
+
+@dataclass(frozen=True)
 class IngestSource:
-    filename: str       # display name, e.g., "foo.pdf" or "Design review"
+    filename: str       # display name, e.g., "foo.pdf" or "README.md"
     text: str           # parsed plain text fed to the LLM
     hash: str           # sha256 of raw bytes (for change detection)
-    source_path: str    # frontmatter source_path: "raw/foo.pdf" / "drive://<id>" / "granola://<id>"
+    source_path: str    # frontmatter source_path
     drive_meta: DriveMeta | None = None
     granola_meta: GranolaMeta | None = None
+    github_meta: GitHubMeta | None = None
 
 
 _DRIVE_FOLDER_RE = re.compile(r"/folders/([a-zA-Z0-9_-]{8,})")
@@ -94,6 +112,24 @@ _GRANOLA_SHARE_URL_RE = re.compile(
     r"notes\.granola\.ai/d/([a-f0-9-]{36})"
 )
 
+# GitHub (browser URLs only support single-segment branches; use the
+# `github://` scheme for branches with slashes if needed in future).
+_GITHUB_FILE_URL_RE = re.compile(
+    r"github\.com/([\w.-]+)/([\w.-]+)/blob/([\w.-]+)/(.+)$"
+)
+_GITHUB_TREE_URL_RE = re.compile(
+    r"github\.com/([\w.-]+)/([\w.-]+)/tree/([\w.-]+)/?$"
+)
+_GITHUB_REPO_URL_RE = re.compile(
+    r"github\.com/([\w.-]+)/([\w.-]+?)/?$"
+)
+_GITHUB_SCHEME_FILE_RE = re.compile(
+    r"^github://([\w.-]+)/([\w.-]+)/(.+)$"
+)
+_GITHUB_SCHEME_REPO_RE = re.compile(
+    r"^github://([\w.-]+)/([\w.-]+?)/?$"
+)
+
 
 def classify_target(arg: str) -> IngestTarget:
     arg = arg.strip()
@@ -105,6 +141,38 @@ def classify_target(arg: str) -> IngestTarget:
                 "drive-folder", external_id=_extract_drive_folder_id(arg)
             )
         return IngestTarget("drive-file", external_id=_extract_drive_file_id(arg))
+
+    # GitHub
+    if "github.com" in arg or arg.startswith("github://"):
+        if (m := _GITHUB_FILE_URL_RE.search(arg)):
+            return IngestTarget(
+                "github-file",
+                github_owner=m.group(1), github_repo=m.group(2),
+                github_branch=m.group(3), github_path=m.group(4),
+            )
+        if (m := _GITHUB_TREE_URL_RE.search(arg)):
+            return IngestTarget(
+                "github-repo",
+                github_owner=m.group(1), github_repo=m.group(2),
+                github_branch=m.group(3),
+            )
+        if (m := _GITHUB_SCHEME_FILE_RE.fullmatch(arg)):
+            return IngestTarget(
+                "github-file",
+                github_owner=m.group(1), github_repo=m.group(2),
+                github_path=m.group(3),
+            )
+        if (m := _GITHUB_SCHEME_REPO_RE.fullmatch(arg)):
+            return IngestTarget(
+                "github-repo",
+                github_owner=m.group(1), github_repo=m.group(2),
+            )
+        if (m := _GITHUB_REPO_URL_RE.search(arg)):
+            return IngestTarget(
+                "github-repo",
+                github_owner=m.group(1), github_repo=m.group(2),
+            )
+        raise typer.BadParameter(f"unrecognized GitHub argument: {arg!r}")
 
     # Granola
     if "granola.ai" in arg or arg.startswith("granola") or _GRANOLA_NOTE_ID_RE.fullmatch(arg):
@@ -235,6 +303,42 @@ async def _run_async(target: str, *, client: LLMClient | None,
             )
         finally:
             gc.close()
+        return
+
+    if tgt.kind == "github-file":
+        assert tgt.github_owner is not None
+        assert tgt.github_repo is not None
+        assert tgt.github_path is not None
+        from mnexa.github.auth import get_token
+        from mnexa.github.client import GitHubClient
+        ghc = GitHubClient(get_token())
+        try:
+            branch = tgt.github_branch or ghc.default_branch(
+                tgt.github_owner, tgt.github_repo,
+            )
+            content, file = ghc.get_file(
+                tgt.github_owner, tgt.github_repo, tgt.github_path, branch,
+            )
+            source = _make_github_source(file, content)
+            await _ingest_one(source, vault=vault, client=client)
+        finally:
+            ghc.close()
+        return
+
+    if tgt.kind == "github-repo":
+        assert tgt.github_owner is not None
+        assert tgt.github_repo is not None
+        from mnexa.github.auth import get_token
+        from mnexa.github.client import GitHubClient
+        ghc = GitHubClient(get_token())
+        try:
+            await _ingest_github_repo(
+                owner=tgt.github_owner, repo=tgt.github_repo,
+                branch=tgt.github_branch, vault=vault, client=client,
+                github_client=ghc, yes=yes, limit=limit,
+            )
+        finally:
+            ghc.close()
         return
 
 
@@ -409,6 +513,69 @@ async def _ingest_granola_list(*, vault: Path, client: LLMClient,
     )
 
 
+async def _ingest_github_repo(*, owner: str, repo: str, branch: str | None,
+                              vault: Path, client: LLMClient,
+                              github_client: GitHubClient, yes: bool,
+                              limit: int | None) -> None:
+    if branch is None:
+        branch = github_client.default_branch(owner, repo)
+    typer.echo(f"[ingest] scanning github://{owner}/{repo}@{branch}…", err=True)
+
+    files = github_client.list_top_level_md(owner, repo, branch)
+    if not files:
+        typer.echo("[ingest] no top-level .md files found", err=True)
+        return
+
+    existing = _existing_external_pages(
+        vault, id_field="github_url", mtime_field="github_blob_sha",
+    )
+    pending: list[GitHubFile] = []
+    skipped = 0
+    for f in files:
+        prev = existing.get(f.html_url)
+        if prev is not None and prev.modified == f.blob_sha:
+            skipped += 1
+            continue
+        pending.append(f)
+
+    if limit is not None:
+        pending = pending[:limit]
+
+    typer.echo(
+        f"[ingest] {len(files)} top-level .md files · {len(pending)} new/changed · "
+        f"{skipped} unchanged",
+        err=True,
+    )
+    if not pending:
+        return
+
+    if (
+        not yes and len(pending) >= FOLDER_CONFIRM_THRESHOLD
+        and not typer.confirm(f"proceed with {len(pending)} ingests?")
+    ):
+        typer.echo("[ingest] aborted", err=True)
+        return
+
+    succeeded = 0
+    failed = 0
+    for i, f in enumerate(pending, 1):
+        typer.echo(f"[{i}/{len(pending)}] {f.path}", err=True)
+        try:
+            content, _ = github_client.get_file(f.owner, f.repo, f.path, f.branch)
+            source = _make_github_source(f, content)
+            await _ingest_one(source, vault=vault, client=client)
+            succeeded += 1
+        except (RuntimeError, OSError, ValueError) as e:
+            typer.echo(f"  failed: {e}", err=True)
+            failed += 1
+            continue
+
+    typer.echo(
+        f"[ingest] github done · {succeeded} ingested · {failed} failed",
+        err=True,
+    )
+
+
 async def _ingest_local_folder(folder: Path, *, vault: Path, client: LLMClient,
                                yes: bool, limit: int | None) -> None:
     typer.echo(f"[ingest] scanning local folder {folder}…", err=True)
@@ -470,6 +637,28 @@ def _load_local_source(file: Path, vault: Path) -> IngestSource:
         hash=hashlib.sha256(raw_bytes).hexdigest(),
         source_path=f"raw/{file.name}",
         drive_meta=None,
+    )
+
+
+def _make_github_source(file: GitHubFile, content: bytes) -> IngestSource:
+    if len(content) > MAX_SOURCE_BYTES:
+        raise ValueError(
+            f"{file.path} is {len(content)} bytes; v0 limit is {MAX_SOURCE_BYTES}"
+        )
+    text = content.decode("utf-8", errors="replace")
+    return IngestSource(
+        filename=file.path,
+        text=text,
+        hash=hashlib.sha256(content).hexdigest(),
+        source_path=f"github://{file.owner}/{file.repo}/{file.path}",
+        github_meta=GitHubMeta(
+            owner=file.owner,
+            repo=file.repo,
+            branch=file.branch,
+            path=file.path,
+            blob_sha=file.blob_sha,
+            html_url=file.html_url,
+        ),
     )
 
 
@@ -682,6 +871,19 @@ def _drive_meta_block(meta: DriveMeta) -> str:
     )
 
 
+def _github_meta_block(meta: GitHubMeta) -> str:
+    return (
+        "<github_meta>\n"
+        f"owner: {meta.owner}\n"
+        f"repo: {meta.repo}\n"
+        f"branch: {meta.branch}\n"
+        f"path: {meta.path}\n"
+        f"blob_sha: {meta.blob_sha}\n"
+        f"html_url: {meta.html_url}\n"
+        "</github_meta>"
+    )
+
+
 def _granola_meta_block(meta: GranolaMeta) -> str:
     attendees = ", ".join(meta.attendees) if meta.attendees else ""
     folders = ", ".join(meta.folder_names) if meta.folder_names else ""
@@ -702,6 +904,8 @@ def _external_meta_block(source: IngestSource) -> str:
         return _drive_meta_block(source.drive_meta)
     if source.granola_meta is not None:
         return _granola_meta_block(source.granola_meta)
+    if source.github_meta is not None:
+        return _github_meta_block(source.github_meta)
     return ""
 
 

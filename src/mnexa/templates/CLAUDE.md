@@ -66,6 +66,14 @@ granola_updated: "<RFC 3339>"
 granola_url: https://notes.granola.ai/d/<uuid>
 attendees: ["Alice Smith", "Bob Jones"]
 granola_folders: ["Top secret recipes"]   # optional
+
+# GitHub-only (present iff source is a markdown file from a GitHub repo):
+github_owner: jiashuoz
+github_repo: mnexa
+github_branch: main
+github_path: README.md
+github_blob_sha: <git blob SHA-1, the sync key>
+github_url: https://github.com/<owner>/<repo>/blob/<branch>/<path>
 ---
 ```
 

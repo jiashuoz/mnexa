@@ -22,6 +22,12 @@ Your inputs (in the user message):
   and optionally `granola_folders` (as a YAML list) — copying values
   verbatim. **Quote timestamp values** to keep them as strings (e.g.,
   `granola_updated: "2026-04-15T15:30:00Z"`).
+- `<github_meta>` (optional): present only when the source is a GitHub
+  markdown file. Contains `owner`, `repo`, `branch`, `path`, `blob_sha`,
+  `html_url`. When present, the source page's frontmatter MUST include:
+  `github_owner`, `github_repo`, `github_branch`, `github_path`,
+  `github_blob_sha`, `github_url` — copying values verbatim. The
+  `github_blob_sha` is the sync key; do not modify it.
 - For all external sources, set `source_path:` to the value provided in
   the `<source>` tag (`drive://<id>`, `granola://<id>`, or `raw/<filename>`
   for local).
